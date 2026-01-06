@@ -1,0 +1,377 @@
+// Tenant Database Schema
+// Purpose: Operational data for ONE smoke shop (each tenant has their own copy of this DB)
+// NO organization_id fields - complete database isolation per tenant
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USERS (Shop Employees & Owner)
+// ============================================
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String
+  password  String   // Hashed with bcrypt
+  role      String   @default("staff") // owner, manager, staff, cashier
+  
+  isActive  Boolean  @default(true) @map("is_active")
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  posSessions     PosSession[]
+  posTransactions PosTransaction[]
+  
+  @@map("users")
+}
+
+// ============================================
+// STORES (PHYSICAL LOCATIONS)
+// ============================================
+
+model Store {
+  id      String  @id @default(uuid())
+  name    String
+  address String
+  city    String?
+  state   String?
+  zipCode String? @map("zip_code")
+  phone   String?
+  
+  isActive  Boolean @default(true) @map("is_active")
+  isPrimary Boolean @default(false) @map("is_primary")
+  
+  // Settings (hours, tax rate, etc.)
+  settings Json @default("{}")
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  orders          Order[]
+  posTransactions PosTransaction[]
+  posSessions     PosSession[]
+  
+  @@map("stores")
+}
+
+// ============================================
+// PRODUCTS (INVENTORY)
+// ============================================
+
+model Product {
+  id String @id @default(uuid())
+  
+  // Link to master catalog (MongoDB _id)
+  masterProductId String? @map("master_product_id")
+  
+  // Product details (copied from master catalog, can be customized)
+  name        String
+  slug        String @unique
+  description String?
+  category    String?
+  brand       String?
+  
+  // Barcode Management (NEW - supports multiple barcode strategies)
+  barcode          String?  // Active barcode (used at POS)
+  originalBarcode  String?  @map("original_barcode")  // Manufacturer barcode (from master catalog)
+  customBarcode    String?  @map("custom_barcode")    // Custom barcode sticker (tenant's own)
+  barcodeType      String?  @default("upc") @map("barcode_type") // upc, ean, custom
+  
+  // SKU (tenant's internal code)
+  sku String?
+  
+  // Pricing (TENANT CONTROLS)
+  costPrice      Float?  @map("cost_price")       // What tenant paid supplier
+  salePrice      Float   @map("sale_price")       // What tenant charges customer
+  compareAtPrice Float?  @map("compare_at_price") // Original price for "sale" display
+  
+  // Inventory (TENANT MANAGES)
+  stockQuantity      Int     @default(0) @map("stock_quantity")
+  trackInventory     Boolean @default(true) @map("track_inventory")
+  lowStockThreshold  Int?    @map("low_stock_threshold")
+  
+  // Media
+  imageUrl String? @map("image_url")
+  images   String[] @default([])
+  
+  // Status
+  isActive Boolean @default(true) @map("is_active")
+  
+  // Flexible metadata
+  metadata Json @default("{}")
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  orderItems          OrderItem[]
+  posTransactionItems PosTransactionItem[]
+  
+  @@index([masterProductId])
+  @@index([barcode])
+  @@index([originalBarcode])
+  @@index([customBarcode])
+  @@index([sku])
+  @@map("products")
+}
+
+// ============================================
+// CUSTOMERS
+// ============================================
+
+model Customer {
+  id    String @id @default(uuid())
+  name  String
+  email String?
+  phone String @unique
+  
+  // Age verification (for tobacco/vape products)
+  dateOfBirth  DateTime? @map("date_of_birth")
+  idVerified   Boolean   @default(false) @map("id_verified")
+  idType       String?   @map("id_type")       // drivers_license, passport, state_id
+  idNumber     String?   @map("id_number")     // Last 4 digits only
+  
+  // Customer data
+  notes         String?
+  loyaltyPoints Int     @default(0) @map("loyalty_points")
+  loyaltyTier   String? @default("bronze") @map("loyalty_tier") // bronze, silver, gold, platinum
+  
+  // Purchase tracking
+  totalPurchases    Float    @default(0) @map("total_purchases")
+  purchaseCount     Int      @default(0) @map("purchase_count")
+  lastPurchaseAt    DateTime? @map("last_purchase_at")
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  orders          Order[]
+  posTransactions PosTransaction[]
+  
+  @@index([phone])
+  @@index([email])
+  @@map("customers")
+}
+
+// ============================================
+// ORDERS (PICKUP/DELIVERY ORDERS)
+// ============================================
+
+model Order {
+  id         String  @id @default(uuid())
+  storeId    String  @map("store_id")
+  customerId String? @map("customer_id")
+  
+  // Order identifier
+  orderNumber String @unique @map("order_number") // "ORD-20260104-0001"
+  
+  // Customer info (denormalized)
+  customerName  String @map("customer_name")
+  customerPhone String @map("customer_phone")
+  customerEmail String? @map("customer_email")
+  
+  // Order totals
+  subtotal Float
+  tax      Float
+  discount Float @default(0)
+  total    Float
+  
+  // Status
+  status String @default("pending") // pending, confirmed, preparing, ready, picked_up, completed, cancelled, no_show
+  
+  // Order type
+  orderType String @default("pickup") @map("order_type") // pickup, delivery, curbside
+  
+  // Pickup/delivery details
+  scheduledFor DateTime? @map("scheduled_for")
+  readyAt      DateTime? @map("ready_at")
+  completedAt  DateTime? @map("completed_at")
+  
+  // Notes
+  customerNotes String? @map("customer_notes")
+  storeNotes    String? @map("store_notes")
+  
+  // Payment
+  paymentStatus String  @default("pending") @map("payment_status") // pending, paid, refunded
+  paymentMethod String? @map("payment_method")                      // cash, card, online
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  store    Store       @relation(fields: [storeId], references: [id])
+  customer Customer?   @relation(fields: [customerId], references: [id])
+  items    OrderItem[]
+  
+  @@index([storeId])
+  @@index([customerId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String @id @default(uuid())
+  orderId   String @map("order_id")
+  productId String @map("product_id")
+  
+  // Item details (denormalized for historical record)
+  name     String
+  price    Float
+  quantity Int
+  subtotal Float
+  
+  // Relations
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+  
+  @@index([orderId])
+  @@map("order_items")
+}
+
+// ============================================
+// POS TRANSACTIONS (IN-STORE SALES)
+// ============================================
+
+model PosTransaction {
+  id        String  @id @default(uuid())
+  storeId   String  @map("store_id")
+  userId    String? @map("user_id")       // Cashier
+  sessionId String? @map("session_id")    // Cash drawer session
+  
+  // Transaction identifier
+  transactionNumber String @unique @map("transaction_number") // "TXN-20260104-0001"
+  
+  // Transaction type
+  type String @default("sale") // sale, return, void, exchange
+  
+  // Amounts
+  subtotal Float
+  tax      Float
+  discount Float @default(0)
+  total    Float
+  
+  // Payment
+  paymentMethod  String @map("payment_method") // cash, card, split, other
+  amountTendered Float? @map("amount_tendered") // Cash given
+  changeGiven    Float? @map("change_given")    // Change returned
+  
+  // Card payment details (optional)
+  cardLast4      String? @map("card_last4")
+  cardBrand      String? @map("card_brand")
+  
+  // Customer (optional - can be anonymous)
+  customerId   String? @map("customer_id")
+  customerName String? @map("customer_name")
+  
+  // Status
+  status String @default("completed") // completed, voided, refunded, pending
+  
+  // Receipt
+  receiptPrinted Boolean @default(false) @map("receipt_printed")
+  receiptEmailed Boolean @default(false) @map("receipt_emailed")
+  
+  // Timestamps
+  createdAt DateTime  @default(now()) @map("created_at")
+  voidedAt  DateTime? @map("voided_at")
+  
+  // Relations
+  store    Store                @relation(fields: [storeId], references: [id])
+  user     User?                @relation(fields: [userId], references: [id])
+  customer Customer?            @relation(fields: [customerId], references: [id])
+  session  PosSession?          @relation(fields: [sessionId], references: [id])
+  items    PosTransactionItem[]
+  
+  @@index([storeId])
+  @@index([userId])
+  @@index([sessionId])
+  @@index([customerId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("pos_transactions")
+}
+
+model PosTransactionItem {
+  id            String @id @default(uuid())
+  transactionId String @map("transaction_id")
+  productId     String @map("product_id")
+  
+  // Item details (historical snapshot)
+  name     String
+  price    Float
+  quantity Int
+  subtotal Float
+  
+  // Tax & discount per item
+  tax      Float @default(0)
+  discount Float @default(0)
+  
+  // Relations
+  transaction PosTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  product     Product        @relation(fields: [productId], references: [id])
+  
+  @@index([transactionId])
+  @@map("pos_transaction_items")
+}
+
+// ============================================
+// POS SESSIONS (CASH DRAWER MANAGEMENT)
+// ============================================
+
+model PosSession {
+  id      String  @id @default(uuid())
+  storeId String  @map("store_id")
+  userId  String? @map("user_id") // Employee who opened session
+  
+  // Session info
+  sessionNumber String @unique @map("session_number") // "SESSION-20260104-0001"
+  
+  // Cash drawer amounts
+  startingCash   Float  @map("starting_cash")
+  endingCash     Float? @map("ending_cash")
+  expectedCash   Float? @map("expected_cash")
+  cashDifference Float? @map("cash_difference")
+  
+  // Sales summary
+  totalSales        Float @default(0) @map("total_sales")
+  totalCash         Float @default(0) @map("total_cash")
+  totalCard         Float @default(0) @map("total_card")
+  transactionCount  Int   @default(0) @map("transaction_count")
+  
+  // Status
+  status String @default("open") // open, closed
+  
+  // Notes
+  openingNotes String? @map("opening_notes")
+  closingNotes String? @map("closing_notes")
+  
+  // Timestamps
+  openedAt DateTime  @default(now()) @map("opened_at")
+  closedAt DateTime? @map("closed_at")
+  
+  // Relations
+  store        Store            @relation(fields: [storeId], references: [id])
+  user         User?            @relation(fields: [userId], references: [id])
+  transactions PosTransaction[]
+  
+  @@index([storeId])
+  @@index([userId])
+  @@index([status])
+  @@index([openedAt])
+  @@map("pos_sessions")
+}

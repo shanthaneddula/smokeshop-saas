@@ -1,0 +1,147 @@
+// Master Database Schema
+// Purpose: Central registry tracking all tenants, their databases, and domains
+// This database is owned by YOU (the platform) and tracks all smoke shop tenants
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/@prisma/master-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("MASTER_DATABASE_URL")
+}
+
+// ============================================
+// TENANTS (Smoke Shop Owners)
+// ============================================
+
+model Tenant {
+  id        String   @id @default(uuid())
+  
+  // Business Info
+  name      String                                  // "Joe's Smoke Shop"
+  slug      String   @unique                        // "joes-smoke-shop" (internal identifier)
+  customDomain String? @unique @map("custom_domain") // "joessmokeshop.com"
+  
+  // Database Connection Info (Encrypted in production)
+  dbHost     String   @map("db_host")               // "db.xyz.supabase.co"
+  dbName     String   @map("db_name")               // "postgres"
+  dbUser     String   @map("db_user")               // "postgres"
+  dbPassword String   @map("db_password")           // Encrypted password
+  dbPort     Int      @default(5432) @map("db_port")
+  
+  // Supabase Specific (Optional)
+  supabaseProjectId  String? @map("supabase_project_id")  // "xyz123abc"
+  supabaseUrl        String? @map("supabase_url")         // "https://xyz.supabase.co"
+  supabaseAnonKey    String? @map("supabase_anon_key")
+  supabaseServiceKey String? @map("supabase_service_key")
+  
+  // Status & Subscription
+  status             String   @default("active")     // active, trial, suspended, cancelled
+  plan               String   @default("starter")    // starter, growth, enterprise
+  trialEndsAt        DateTime? @map("trial_ends_at")
+  subscriptionStartedAt DateTime? @map("subscription_started_at")
+  
+  // Owner Contact
+  ownerEmail String   @map("owner_email")
+  ownerName  String?  @map("owner_name")
+  phone      String?
+  address    String?
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  migrations   TenantMigration[]
+  activityLogs TenantActivityLog[]
+  
+  @@index([slug])
+  @@index([customDomain])
+  @@index([status])
+  @@map("tenants")
+}
+
+// ============================================
+// ADMIN USERS (Platform Team)
+// ============================================
+
+model AdminUser {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  role         String   @default("admin")  // admin, support, developer
+  isActive     Boolean  @default(true) @map("is_active")
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  @@map("admin_users")
+}
+
+// ============================================
+// MIGRATION TRACKING
+// ============================================
+
+model TenantMigration {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  
+  migrationName String   @map("migration_name")  // "001_initial_schema"
+  status        String   @default("pending")     // pending, running, completed, failed
+  errorMessage  String?  @map("error_message")
+  executedAt    DateTime? @map("executed_at")
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  @@index([tenantId])
+  @@index([status])
+  @@map("tenant_migrations")
+}
+
+// ============================================
+// ACTIVITY LOGGING
+// ============================================
+
+model TenantActivityLog {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  
+  eventType String   @map("event_type")  // "provisioned", "domain_updated", "suspended", "plan_upgraded"
+  details   Json?                         // Additional event data
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  @@index([tenantId])
+  @@index([eventType])
+  @@index([createdAt])
+  @@map("tenant_activity_logs")
+}
+
+// ============================================
+// PLATFORM SETTINGS
+// ============================================
+
+model PlatformSetting {
+  id    String @id @default(uuid())
+  key   String @unique
+  value String
+  
+  description String?
+  
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  @@map("platform_settings")
+}

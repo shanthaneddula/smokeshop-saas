@@ -1,0 +1,393 @@
+// This is your Prisma schema file for Supabase PostgreSQL
+// Multi-tenant schema with Row-Level Security support
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// ORGANIZATIONS (TENANTS)
+// ============================================
+
+model Organization {
+  id        String   @id @default(uuid())
+  slug      String   @unique // For subdomain: {slug}.yourdomain.com
+  name      String
+  email     String
+  phone     String?
+  
+  // Subscription & Status
+  subscriptionTier   String   @default("free") // free, starter, pro
+  subscriptionStatus String   @default("active") // active, suspended, cancelled
+  trialEndsAt        DateTime?
+  
+  // Settings (JSON for flexibility)
+  settings  Json     @default("{}")
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  members   OrganizationMember[]
+  stores    Store[]
+  products  Product[]
+  customers Customer[]
+  orders    Order[]
+  posTransactions PosTransaction[]
+  posSessions     PosSession[]
+  
+  @@index([slug])
+  @@map("organizations")
+}
+
+// ============================================
+// USERS & ORGANIZATION MEMBERSHIP
+// ============================================
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String
+  password  String   // Hashed with bcrypt
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  organizations OrganizationMember[]
+  
+  @@map("users")
+}
+
+model OrganizationMember {
+  id             String   @id @default(uuid())
+  organizationId String
+  userId         String
+  role           String   @default("staff") // owner, manager, staff, cashier
+  
+  // Timestamps
+  createdAt      DateTime @default(now())
+  
+  // Relations
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+// ============================================
+// STORES (PHYSICAL LOCATIONS PER TENANT)
+// ============================================
+
+model Store {
+  id             String   @id @default(uuid())
+  organizationId String
+  
+  name           String
+  address        String
+  city           String?
+  state          String?
+  zipCode        String?
+  phone          String?
+  
+  isActive       Boolean  @default(true)
+  isPrimary      Boolean  @default(false)
+  
+  // Settings
+  settings       Json     @default("{}")
+  
+  // Timestamps
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  // Relations
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  orders         Order[]
+  posTransactions PosTransaction[]
+  posSessions    PosSession[]
+  
+  @@index([organizationId])
+  @@map("stores")
+}
+
+// ============================================
+// PRODUCTS (TENANT-SPECIFIC INVENTORY)
+// ============================================
+
+model Product {
+  id                  String   @id @default(uuid())
+  organizationId      String
+  
+  // Link to master catalog (MongoDB)
+  masterProductId     String?  // Reference to MongoDB master_products collection
+  
+  // Product details
+  name                String
+  slug                String
+  description         String?
+  barcode             String?
+  sku                 String?
+  
+  // Pricing
+  price               Float
+  compareAtPrice      Float?
+  cost                Float?   // For profit tracking
+  
+  // Inventory
+  stockQuantity       Int      @default(0)
+  trackInventory      Boolean  @default(true)
+  lowStockThreshold   Int?
+  
+  // Categorization
+  category            String?
+  brand               String?
+  tags                String[] @default([])
+  
+  // Images
+  image               String?
+  images              String[] @default([])
+  
+  // Status
+  status              String   @default("active") // active, draft, archived
+  isActive            Boolean  @default(true)
+  
+  // Metadata (flexible attributes)
+  metadata            Json     @default("{}")
+  
+  // Timestamps
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  // Relations
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  orderItems          OrderItem[]
+  posTransactionItems PosTransactionItem[]
+  
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+  @@index([organizationId, barcode])
+  @@index([masterProductId])
+  @@map("products")
+}
+
+// ============================================
+// CUSTOMERS
+// ============================================
+
+model Customer {
+  id             String   @id @default(uuid())
+  organizationId String
+  
+  // Contact info
+  name           String
+  email          String?
+  phone          String
+  
+  // Additional info
+  notes          String?
+  loyaltyPoints  Int      @default(0)
+  
+  // Timestamps
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  lastOrderAt    DateTime?
+  
+  // Relations
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  orders         Order[]
+  
+  @@unique([organizationId, phone])
+  @@index([organizationId])
+  @@index([organizationId, email])
+  @@map("customers")
+}
+
+// ============================================
+// ORDERS (PICKUP ORDERS)
+// ============================================
+
+model Order {
+  id             String   @id @default(uuid())
+  organizationId String
+  storeId        String
+  customerId     String?
+  
+  // Order number (display)
+  orderNumber    String   @unique
+  
+  // Customer info (denormalized for convenience)
+  customerName   String
+  customerPhone  String
+  customerEmail  String?
+  
+  // Order details
+  subtotal       Float
+  tax            Float
+  discount       Float    @default(0)
+  total          Float
+  
+  // Status tracking
+  status         String   @default("pending") // pending, confirmed, ready, picked_up, cancelled, no_show
+  
+  // Pickup details
+  pickupTime     DateTime?
+  pickedUpAt     DateTime?
+  
+  // Notes
+  customerNotes  String?
+  storeNotes     String?
+  
+  // Timestamps
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  // Relations
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store          Store        @relation(fields: [storeId], references: [id])
+  customer       Customer?    @relation(fields: [customerId], references: [id])
+  items          OrderItem[]
+  
+  @@index([organizationId])
+  @@index([storeId])
+  @@index([customerId])
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id          String  @id @default(uuid())
+  orderId     String
+  productId   String
+  
+  // Item details (denormalized)
+  name        String
+  price       Float
+  quantity    Int
+  subtotal    Float
+  
+  // Relations
+  order       Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product     Product @relation(fields: [productId], references: [id])
+  
+  @@index([orderId])
+  @@map("order_items")
+}
+
+// ============================================
+// POS TRANSACTIONS
+// ============================================
+
+model PosTransaction {
+  id              String   @id @default(uuid())
+  organizationId  String
+  storeId         String
+  sessionId       String?
+  
+  // Transaction details
+  transactionNumber String @unique
+  type            String   @default("sale") // sale, return, void
+  
+  // Amounts
+  subtotal        Float
+  tax             Float
+  discount        Float    @default(0)
+  total           Float
+  
+  // Payment
+  paymentMethod   String   // cash, card, split, other
+  amountTendered  Float?
+  changeGiven     Float?
+  
+  // Customer (optional)
+  customerId      String?
+  customerName    String?
+  
+  // Staff
+  employeeId      String?
+  employeeName    String?
+  
+  // Status
+  status          String   @default("completed") // completed, voided, refunded
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  voidedAt        DateTime?
+  
+  // Relations
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store           Store        @relation(fields: [storeId], references: [id])
+  session         PosSession?  @relation(fields: [sessionId], references: [id])
+  items           PosTransactionItem[]
+  
+  @@index([organizationId])
+  @@index([storeId])
+  @@index([sessionId])
+  @@index([organizationId, createdAt])
+  @@map("pos_transactions")
+}
+
+model PosTransactionItem {
+  id              String  @id @default(uuid())
+  transactionId   String
+  productId       String
+  
+  // Item details
+  name            String
+  price           Float
+  quantity        Int
+  subtotal        Float
+  
+  // Relations
+  transaction     PosTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  product         Product        @relation(fields: [productId], references: [id])
+  
+  @@index([transactionId])
+  @@map("pos_transaction_items")
+}
+
+// ============================================
+// POS SESSIONS (CASH DRAWER MANAGEMENT)
+// ============================================
+
+model PosSession {
+  id              String   @id @default(uuid())
+  organizationId  String
+  storeId         String
+  
+  // Session details
+  employeeId      String?
+  employeeName    String?
+  
+  // Cash drawer
+  startingCash    Float
+  endingCash      Float?
+  expectedCash    Float?
+  cashDifference  Float?
+  
+  // Status
+  status          String   @default("open") // open, closed
+  
+  // Timestamps
+  openedAt        DateTime @default(now())
+  closedAt        DateTime?
+  
+  // Relations
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store           Store            @relation(fields: [storeId], references: [id])
+  transactions    PosTransaction[]
+  
+  @@index([organizationId])
+  @@index([storeId])
+  @@index([organizationId, status])
+  @@map("pos_sessions")
+}
