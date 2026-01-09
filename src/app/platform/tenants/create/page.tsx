@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import TenantCreationWizard from '@/components/platform/tenants/TenantCreationWizard';
+import SimplifiedTenantWizard from '@/components/platform/tenants/SimplifiedTenantWizard';
 
 export default function CreateTenantPage() {
   const router = useRouter();
@@ -64,7 +64,7 @@ export default function CreateTenantPage() {
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
-        <TenantCreationWizard />
+        <SimplifiedTenantWizard />
       </main>
     </div>
   );
