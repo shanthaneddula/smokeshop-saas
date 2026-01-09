@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate --schema=prisma/schema-master.prisma && prisma generate --schema=prisma/schema-tenant.prisma && next build",
+    "postinstall": "prisma generate --schema=prisma/schema-master.prisma && prisma generate --schema=prisma/schema-tenant.prisma",
     "start": "next start",
     "lint": "eslint"
   },
