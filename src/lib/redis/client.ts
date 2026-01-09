@@ -93,8 +93,12 @@ export function getRedisClient(): Redis | null {
     // Get Redis configuration (connection string or config object)
     const config = getRedisConfig();
     
-    // Create new client
-    redisClient = new Redis(config);
+    // Create new client with appropriate constructor
+    if (typeof config === 'string') {
+      redisClient = new Redis(config);
+    } else {
+      redisClient = new Redis(config);
+    }
     
     // Event handlers
     redisClient.on('connect', () => {
