@@ -6,18 +6,23 @@ if (!MONGODB_URI) {
   throw new Error('Please define the MONGODB_URI environment variable');
 }
 
+interface MongooseCache {
+  conn: typeof mongoose | null;
+  promise: Promise<typeof mongoose> | null;
+}
+
 /**
  * Global is used here to maintain a cached connection across hot reloads
  * in development. This prevents connections growing exponentially
  * during API Route usage.
  */
-let cached = global.mongoose;
+let cached: MongooseCache = (global as unknown as { mongoose?: MongooseCache }).mongoose || { conn: null, promise: null };
 
 if (!cached) {
-  cached = global.mongoose = { conn: null, promise: null };
+  cached = (global as unknown as { mongoose: MongooseCache }).mongoose = { conn: null, promise: null };
 }
 
-export async function connectToMongoDB() {
+export async function connectToMongoDB(): Promise<typeof mongoose> {
   if (cached.conn) {
     return cached.conn;
   }
@@ -27,9 +32,7 @@ export async function connectToMongoDB() {
       bufferCommands: false,
     };
 
-    cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
-      return mongoose;
-    });
+    cached.promise = mongoose.connect(MONGODB_URI, opts);
   }
 
   try {
@@ -143,6 +146,80 @@ masterProductSchema.index({ isAvailable: 1, isActive: 1 });
 masterProductSchema.index({ barcode: 1 });
 
 // ============================================
+// TENANT PRODUCT SCHEMA
+// Purpose: Tenant's inventory with custom pricing/stock
+// Storage: Separate MongoDB database per tenant (tenant-{tenantId})
+// ============================================
+
+const tenantProductSchema = new mongoose.Schema(
+  {
+    // Link to master catalog
+    masterProductId: { type: String, index: true }, // Reference to MasterProduct._id (optional)
+    
+    // Tenant isolation (database-level, but kept for queries)
+    tenantId: { type: String, required: true, index: true },
+    
+    // Product details (copied from catalog, can be customized)
+    name: { type: String, required: true },
+    slug: { type: String, required: true },
+    description: String,
+    category: String,
+    brand: String,
+    
+    // Barcode management
+    barcode: { type: String, index: true },
+    originalBarcode: String, // From manufacturer
+    customBarcode: String,   // Tenant's custom sticker
+    barcodeType: { type: String, enum: ['upc', 'ean', 'custom'], default: 'upc' },
+    
+    // SKU (tenant's internal code)
+    sku: { type: String, index: true },
+    
+    // Pricing (tenant controls)
+    costPrice: Number,           // What tenant paid
+    salePrice: { type: Number, required: true },  // Customer price
+    compareAtPrice: Number,      // Original price for sales
+    
+    // Inventory (tenant manages)
+    stockQuantity: { type: Number, required: true, default: 0 },
+    trackInventory: { type: Boolean, default: true },
+    lowStockThreshold: { type: Number, default: 10 },
+    
+    // Media
+    imageUrl: String,
+    images: { type: [String], default: [] },
+    
+    // Product specifications (flexible)
+    specifications: mongoose.Schema.Types.Mixed,
+    
+    // Status
+    isActive: { type: Boolean, default: true, index: true },
+    
+    // Flexible metadata
+    metadata: mongoose.Schema.Types.Mixed,
+  },
+  {
+    timestamps: true,
+    collection: 'products',
+  }
+);
+
+// Indexes for tenant product queries
+tenantProductSchema.index({ tenantId: 1, barcode: 1 });
+tenantProductSchema.index({ tenantId: 1, sku: 1 });
+tenantProductSchema.index({ tenantId: 1, category: 1 });
+tenantProductSchema.index({ tenantId: 1, brand: 1 });
+tenantProductSchema.index({ tenantId: 1, stockQuantity: 1 });
+tenantProductSchema.index({ tenantId: 1, isActive: 1 });
+
+// Text search for tenant products
+tenantProductSchema.index({
+  name: 'text',
+  description: 'text',
+  brand: 'text',
+});
+
+// ============================================
 // MASTER BRAND SCHEMA
 // ============================================
 
@@ -186,6 +263,10 @@ export const MasterProduct =
   mongoose.models.MasterProduct ||
   mongoose.model('MasterProduct', masterProductSchema);
 
+export const TenantProduct =
+  mongoose.models.TenantProduct ||
+  mongoose.model('TenantProduct', tenantProductSchema);
+
 export const MasterBrand =
   mongoose.models.MasterBrand ||
   mongoose.model('MasterBrand', masterBrandSchema);
@@ -193,6 +274,82 @@ export const MasterBrand =
 export const MasterCategory =
   mongoose.models.MasterCategory ||
   mongoose.model('MasterCategory', masterCategorySchema);
+
+// ============================================
+// TENANT MONGODB CONNECTION
+// ============================================
+
+// Cache tenant MongoDB connections
+const tenantMongoConnections: Map<string, typeof mongoose> = new Map();
+
+/**
+ * Connect to tenant's MongoDB database
+ * Each tenant gets their own database: tenant-{slug}
+ * @param tenantSlug - The tenant slug (e.g., "joes-smoke-shop")
+ * @returns Mongoose connection to tenant database
+ */
+export async function connectToTenantMongoDB(tenantSlug: string) {
+  // Check if connection exists and is active
+  if (tenantMongoConnections.has(tenantSlug)) {
+    const conn = tenantMongoConnections.get(tenantSlug);
+    if (conn && conn.connection?.readyState === 1) {
+      return conn;
+    } else {
+      // Remove stale/failed connection from cache
+      tenantMongoConnections.delete(tenantSlug);
+    }
+  }
+
+  // Build tenant database URI
+  const baseUri = process.env.MONGODB_URI || '';
+  if (!baseUri) {
+    throw new Error('MONGODB_URI not configured');
+  }
+
+  // Replace database name with tenant-specific database
+  // Format: mongodb+srv://user:pass@cluster.mongodb.net/original-db
+  // Becomes: mongodb+srv://user:pass@cluster.mongodb.net/tenant-{slug}
+  const tenantDbName = `tenant-${tenantSlug}`;
+  
+  // Validate database name length (MongoDB limit is 38 bytes)
+  if (tenantDbName.length > 38) {
+    throw new Error(`Tenant database name too long: ${tenantDbName} (max 38 chars)`);
+  }
+  
+  const tenantUri = baseUri.replace(/\/[^\/]+(\?|$)/, `/${tenantDbName}$1`);
+
+  try {
+    // Create new connection for this tenant
+    const tenantConnection = await mongoose.createConnection(tenantUri, {
+      bufferCommands: false,
+    }).asPromise();
+
+    // Register TenantProduct model on this connection
+    if (!tenantConnection.models.TenantProduct) {
+      tenantConnection.model('TenantProduct', tenantProductSchema);
+    }
+
+    // Cache the connection
+    tenantMongoConnections.set(tenantSlug, tenantConnection as any);
+
+    console.log(`[MongoDB] Connected to tenant database: ${tenantDbName}`);
+
+    return tenantConnection;
+  } catch (error) {
+    console.error(`[MongoDB] Failed to connect to tenant database: ${tenantDbName}`, error);
+    throw error;
+  }
+}
+
+/**
+ * Get TenantProduct model for specific tenant
+ * @param tenantSlug - The tenant slug (e.g., "joes-smoke-shop")
+ * @returns TenantProduct model connected to tenant's database
+ */
+export async function getTenantProductModel(tenantSlug: string) {
+  const connection = await connectToTenantMongoDB(tenantSlug);
+  return connection.models.TenantProduct;
+}
 
 // Helper functions
 export async function findProductByBarcode(barcode: string) {

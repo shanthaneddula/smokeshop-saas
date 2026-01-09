@@ -49,6 +49,10 @@ model Tenant {
   phone      String?
   address    String?
   
+  // Soft Delete
+  deletedAt      DateTime? @map("deleted_at")
+  deletionReason String?   @map("deletion_reason")
+  
   // Timestamps
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -60,6 +64,7 @@ model Tenant {
   @@index([slug])
   @@index([customDomain])
   @@index([status])
+  @@index([deletedAt])
   @@map("tenants")
 }
 

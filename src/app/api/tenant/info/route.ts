@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getTenantInfo, requireTenantDb } from '@/lib/tenant-context';
 
 export const dynamic = 'force-dynamic';
@@ -7,10 +7,10 @@ export const dynamic = 'force-dynamic';
  * Test endpoint to verify middleware and tenant context
  * GET /api/tenant/info
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     // Get tenant info from headers
-    const tenantInfo = await getTenantInfo();
+    const tenantInfo = await getTenantInfo(request);
     
     if (!tenantInfo) {
       return NextResponse.json(
@@ -20,13 +20,12 @@ export async function GET() {
     }
 
     // Get tenant database connection
-    const db = await requireTenantDb();
+    const db = await requireTenantDb(tenantInfo);
 
-    // Query tenant data
-    const [userCount, storeCount, productCount] = await Promise.all([
+    // Query tenant data (products stored in MongoDB, not PostgreSQL)
+    const [userCount, storeCount] = await Promise.all([
       db.user.count(),
       db.store.count(),
-      db.product.count(),
     ]);
 
     return NextResponse.json({
@@ -35,12 +34,11 @@ export async function GET() {
         id: tenantInfo.id,
         name: tenantInfo.name,
         slug: tenantInfo.slug,
-        domain: tenantInfo.domain,
+        customDomain: tenantInfo.customDomain,
       },
       database: {
         users: userCount,
         stores: storeCount,
-        products: productCount,
       },
       message: 'Tenant context working! 🎉',
     });

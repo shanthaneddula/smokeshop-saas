@@ -1,39 +1,47 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import prisma from '@/lib/db/prisma';
-import { verifyPassword } from '@/lib/auth/password';
-import { generateToken } from '@/lib/auth/jwt';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { requireTenant, requireTenantDb } from '@/lib/tenant-context';
+import { applyRateLimit, addRateLimitHeaders } from '@/lib/security/rate-limit-middleware';
+import { RATE_LIMITS } from '@/lib/security/rate-limiter';
 
 const loginSchema = z.object({
   email: z.string().email('Invalid email address'),
   password: z.string().min(1, 'Password is required'),
 });
 
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
 export async function POST(request: NextRequest) {
   try {
+    // Apply rate limiting (5 attempts per minute per IP)
+    const rateLimitResult = await applyRateLimit(request, RATE_LIMITS.TENANT_LOGIN);
+    if (!rateLimitResult.allowed && rateLimitResult.response) {
+      return rateLimitResult.response;
+    }
+    
+    // Get tenant context from domain
+    const tenant = await requireTenant(request);
+    const tenantDb = await requireTenantDb(tenant);
+    
     const body = await request.json();
     
     // Validate input
     const result = loginSchema.safeParse(body);
     if (!result.success) {
       return NextResponse.json(
-        { error: result.error.errors[0].message },
+        { error: result.error.issues[0].message },
         { status: 400 }
       );
     }
     
     const { email, password } = result.data;
     
-    // Find user by email
-    const user = await prisma.user.findUnique({
+    // Find user in TENANT database (complete isolation)
+    const user = await tenantDb.user.findUnique({
       where: { email: email.toLowerCase() },
-      include: {
-        organizations: {
-          include: {
-            organization: true,
-          },
-        },
-      },
     });
     
     if (!user) {
@@ -43,8 +51,8 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Verify password
-    const isValidPassword = await verifyPassword(password, user.password);
+    // Verify password with bcrypt
+    const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
       return NextResponse.json(
         { error: 'Invalid email or password' },
@@ -52,29 +60,37 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Check if user has any organizations
-    const primaryOrg = user.organizations[0];
+    // Generate JWT token with tenant context
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+        tenantId: tenant.id,
+        tenantSlug: tenant.slug,
+        role: user.role,
+      },
+      process.env.JWT_SECRET!,
+      {
+        expiresIn: '7d',
+        issuer: 'smokeshop-saas',
+        audience: 'smokeshop-saas-users',
+      }
+    );
     
-    // Generate JWT token
-    const token = generateToken({
-      userId: user.id,
-      email: user.email,
-      name: user.name,
-      organizationId: primaryOrg?.organization.id,
-      organizationSlug: primaryOrg?.organization.slug,
-      role: primaryOrg?.role || 'staff',
-    });
-    
-    // Create response with auth cookie
+    // Create response with user and tenant info
     const response = NextResponse.json({
       success: true,
       user: {
         id: user.id,
         email: user.email,
         name: user.name,
-        organizationId: primaryOrg?.organization.id,
-        organizationSlug: primaryOrg?.organization.slug,
-        role: primaryOrg?.role || 'staff',
+        role: user.role,
+      },
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        slug: tenant.slug,
       },
     });
     
@@ -87,9 +103,19 @@ export async function POST(request: NextRequest) {
       path: '/',
     });
     
-    return response;
+    // Add rate limit headers to successful response
+    return addRateLimitHeaders(response, rateLimitResult.info);
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('[Login] Error:', error);
+    
+    // Handle tenant not found errors
+    if (error instanceof Error && error.message.includes('not found')) {
+      return NextResponse.json(
+        { error: 'Tenant not found for this domain' },
+        { status: 404 }
+      );
+    }
+    
     return NextResponse.json(
       { error: 'An error occurred during login' },
       { status: 500 }

@@ -67,66 +67,11 @@ model Store {
 }
 
 // ============================================
-// PRODUCTS (INVENTORY)
+// PRODUCTS - STORED IN MONGODB
 // ============================================
-
-model Product {
-  id String @id @default(uuid())
-  
-  // Link to master catalog (MongoDB _id)
-  masterProductId String? @map("master_product_id")
-  
-  // Product details (copied from master catalog, can be customized)
-  name        String
-  slug        String @unique
-  description String?
-  category    String?
-  brand       String?
-  
-  // Barcode Management (NEW - supports multiple barcode strategies)
-  barcode          String?  // Active barcode (used at POS)
-  originalBarcode  String?  @map("original_barcode")  // Manufacturer barcode (from master catalog)
-  customBarcode    String?  @map("custom_barcode")    // Custom barcode sticker (tenant's own)
-  barcodeType      String?  @default("upc") @map("barcode_type") // upc, ean, custom
-  
-  // SKU (tenant's internal code)
-  sku String?
-  
-  // Pricing (TENANT CONTROLS)
-  costPrice      Float?  @map("cost_price")       // What tenant paid supplier
-  salePrice      Float   @map("sale_price")       // What tenant charges customer
-  compareAtPrice Float?  @map("compare_at_price") // Original price for "sale" display
-  
-  // Inventory (TENANT MANAGES)
-  stockQuantity      Int     @default(0) @map("stock_quantity")
-  trackInventory     Boolean @default(true) @map("track_inventory")
-  lowStockThreshold  Int?    @map("low_stock_threshold")
-  
-  // Media
-  imageUrl String? @map("image_url")
-  images   String[] @default([])
-  
-  // Status
-  isActive Boolean @default(true) @map("is_active")
-  
-  // Flexible metadata
-  metadata Json @default("{}")
-  
-  // Timestamps
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  
-  // Relations
-  orderItems          OrderItem[]
-  posTransactionItems PosTransactionItem[]
-  
-  @@index([masterProductId])
-  @@index([barcode])
-  @@index([originalBarcode])
-  @@index([customBarcode])
-  @@index([sku])
-  @@map("products")
-}
+// Products are stored in MongoDB (tenant-{tenantId} database)
+// Each tenant has their own MongoDB database for product isolation
+// PostgreSQL only stores product references (MongoDB _id) in order/transaction items
 
 // ============================================
 // CUSTOMERS
@@ -228,7 +173,7 @@ model Order {
 model OrderItem {
   id        String @id @default(uuid())
   orderId   String @map("order_id")
-  productId String @map("product_id")
+  productId String @map("product_id") // MongoDB _id reference
   
   // Item details (denormalized for historical record)
   name     String
@@ -237,10 +182,10 @@ model OrderItem {
   subtotal Float
   
   // Relations
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
   
   @@index([orderId])
+  @@index([productId])
   @@map("order_items")
 }
 
@@ -309,7 +254,7 @@ model PosTransaction {
 model PosTransactionItem {
   id            String @id @default(uuid())
   transactionId String @map("transaction_id")
-  productId     String @map("product_id")
+  productId     String @map("product_id") // MongoDB _id reference
   
   // Item details (historical snapshot)
   name     String
@@ -323,9 +268,9 @@ model PosTransactionItem {
   
   // Relations
   transaction PosTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-  product     Product        @relation(fields: [productId], references: [id])
   
   @@index([transactionId])
+  @@index([productId])
   @@map("pos_transaction_items")
 }
 

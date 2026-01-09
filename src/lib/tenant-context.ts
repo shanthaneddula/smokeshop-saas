@@ -1,148 +1,116 @@
 /**
  * Tenant Context Utilities
  * 
- * Helpers to extract tenant information from request headers
- * (injected by middleware) and get tenant database connection.
+ * Middleware passes x-tenant-domain header (NO DB calls in Edge runtime).
+ * API routes use this module to lookup tenant from master DB in Node.js runtime.
  */
 
-import { headers } from 'next/headers';
 import { PrismaClient } from '@prisma/client';
-import { getTenantDb } from './db/tenant-connector';
+import { NextRequest } from 'next/server';
+import { getTenantDb as getPooledTenantDb, buildConnectionStringWithDecryption } from './db/tenant-connector';
+import { getTenantByDomain, buildTenantConnectionString } from './db/master-db';
+import { DecryptionError } from './security/encryption';
 
 export interface TenantInfo {
   id: string;
   slug: string;
   name: string;
-  domain: string;
-  dbConfig: {
-    host: string;
-    user: string;
-    password: string;
-    port: string;
-    database: string;
-    projectId: string;
-  };
+  customDomain: string | null;
+  dbHost: string;
+  dbName: string;
+  dbUser: string;
+  dbPassword: string;
+  dbPort: number;
+  supabaseProjectId: string | null;
+  status: string;
 }
 
 /**
- * Extract tenant information from request headers (set by middleware)
- * Use this in API routes and server components
+ * Get tenant info from request (reads x-tenant-domain header, queries master DB)
+ * Use this in API routes - runs in Node.js runtime where Prisma works
  */
-export async function getTenantInfo(): Promise<TenantInfo | null> {
+export async function getTenantInfo(request: NextRequest): Promise<TenantInfo | null> {
   try {
-    const headersList = await headers();
+    const domain = request.headers.get('x-tenant-domain');
     
-    const tenantId = headersList.get('x-tenant-id');
-    const tenantSlug = headersList.get('x-tenant-slug');
-    const tenantName = headersList.get('x-tenant-name');
-    const tenantDomain = headersList.get('x-tenant-domain');
-    const dbConfigEncoded = headersList.get('x-tenant-db-config');
-
-    if (!tenantId || !tenantSlug || !dbConfigEncoded) {
-      console.warn('[TenantContext] Missing tenant headers');
+    if (!domain) {
+      console.warn('[TenantContext] Missing x-tenant-domain header from middleware');
       return null;
     }
 
-    // Decode database config
-    const dbConfig = JSON.parse(
-      Buffer.from(dbConfigEncoded, 'base64').toString('utf-8')
-    );
-
-    return {
-      id: tenantId,
-      slug: tenantSlug,
-      name: tenantName || '',
-      domain: tenantDomain || '',
-      dbConfig,
-    };
+    console.log(`[TenantContext] Looking up tenant for domain: ${domain}`);
+    
+    // Query master database for tenant (Node.js runtime - Prisma OK!)
+    const tenant = await getTenantByDomain(domain);
+    
+    if (!tenant) {
+      console.error(`[TenantContext] Tenant not found for domain: ${domain}`);
+      return null;
+    }
+    
+    console.log(`[TenantContext] Found tenant: ${tenant.name} (${tenant.slug})`);
+    
+    return tenant;
   } catch (error) {
-    console.error('[TenantContext] Error extracting tenant info:', error);
+    console.error('[TenantContext] Error looking up tenant:', error);
     return null;
   }
 }
 
 /**
- * Get tenant database connection
- * Automatically builds connection string and uses connection pool
+ * Get tenant database connection from tenant info
+ * Automatically decrypts password, builds connection string, and uses connection pool
  */
-export async function getTenantDatabase(): Promise<PrismaClient | null> {
+export async function getTenantDb(tenant: TenantInfo): Promise<PrismaClient> {
   try {
-    const tenantInfo = await getTenantInfo();
+    console.log(`[TenantPool] Getting connection for tenant ${tenant.id}`);
     
-    if (!tenantInfo) {
-      console.error('[TenantContext] No tenant info available');
-      return null;
-    }
-
-    // Build connection string
-    const connectionString = `postgresql://${tenantInfo.dbConfig.user}:${tenantInfo.dbConfig.password}@${tenantInfo.dbConfig.host}:${tenantInfo.dbConfig.port}/${tenantInfo.dbConfig.database}`;
-
+    // Build connection string with automatic password decryption
+    const connectionString = await buildTenantConnectionString(tenant);
+    
     // Get cached or new connection from pool
-    const db = await getTenantDb(tenantInfo.id, connectionString);
+    const db = getPooledTenantDb(tenant.id, connectionString);
     
     return db;
   } catch (error) {
     console.error('[TenantContext] Error getting tenant database:', error);
-    return null;
+    
+    if (error instanceof DecryptionError) {
+      throw new Error('Failed to decrypt database credentials. Please contact support.');
+    }
+    
+    throw new Error(`Failed to connect to tenant database: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
 /**
- * Require tenant context - throws error if not available
- * Use this when tenant context is mandatory
+ * Require tenant context - throws error if not found
+ * Use this when tenant context is mandatory for the request
  */
-export async function requireTenant(): Promise<TenantInfo> {
-  const tenantInfo = await getTenantInfo();
+export async function requireTenant(request: NextRequest): Promise<TenantInfo> {
+  const tenant = await getTenantInfo(request);
   
-  if (!tenantInfo) {
-    throw new Error('Tenant context not available. Request must go through domain middleware.');
+  if (!tenant) {
+    throw new Error('Tenant not found for this domain');
   }
   
-  return tenantInfo;
+  if (tenant.status !== 'active') {
+    throw new Error(`Tenant is ${tenant.status}`);
+  }
+  
+  return tenant;
 }
 
 /**
  * Require tenant database - throws error if not available
+ * Combines tenant lookup + database connection in one call
  */
-export async function requireTenantDb(): Promise<PrismaClient> {
-  const db = await getTenantDatabase();
+export async function requireTenantDb(tenant: TenantInfo): Promise<PrismaClient> {
+  const db = await getTenantDb(tenant);
   
   if (!db) {
-    throw new Error('Tenant database not available. Request must go through domain middleware.');
+    throw new Error('Failed to connect to tenant database');
   }
   
   return db;
-}
-
-/**
- * Extract tenant info from NextRequest (for use in route handlers)
- * This version works with NextRequest objects directly
- */
-export function extractTenantFromRequest(request: Request): TenantInfo | null {
-  try {
-    const tenantId = request.headers.get('x-tenant-id');
-    const tenantSlug = request.headers.get('x-tenant-slug');
-    const tenantName = request.headers.get('x-tenant-name');
-    const tenantDomain = request.headers.get('x-tenant-domain');
-    const dbConfigEncoded = request.headers.get('x-tenant-db-config');
-
-    if (!tenantId || !tenantSlug || !dbConfigEncoded) {
-      return null;
-    }
-
-    const dbConfig = JSON.parse(
-      Buffer.from(dbConfigEncoded, 'base64').toString('utf-8')
-    );
-
-    return {
-      id: tenantId,
-      slug: tenantSlug,
-      name: tenantName || '',
-      domain: tenantDomain || '',
-      dbConfig,
-    };
-  } catch (error) {
-    console.error('[TenantContext] Error extracting from request:', error);
-    return null;
-  }
 }

@@ -1,4 +1,4 @@
-import jwt from 'jsonwebtoken';
+import jwt, { SignOptions } from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key-DO-NOT-USE-IN-PRODUCTION';
 
@@ -6,20 +6,24 @@ export interface JWTPayload {
   userId: string;
   email: string;
   name: string;
+  tenantId?: string;
+  tenantSlug?: string;
+  role?: string;
+  // Legacy fields for backward compatibility
   organizationId?: string;
   organizationSlug?: string;
-  role?: string;
 }
 
 /**
  * Generate a JWT token for a user
  */
 export function generateToken(payload: JWTPayload, expiresIn: string = '7d'): string {
-  return jwt.sign(payload, JWT_SECRET, {
-    expiresIn,
+  const options: SignOptions = {
+    expiresIn: expiresIn as jwt.SignOptions['expiresIn'],
     issuer: 'smokeshop-saas',
     audience: 'smokeshop-saas-users',
-  });
+  };
+  return jwt.sign(payload, JWT_SECRET, options);
 }
 
 /**

@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { decryptDatabasePassword, DecryptionError } from '../security/encryption';
 
 // Connection pool for tenant databases
 // Caches Prisma clients to avoid creating new connections on every request
@@ -164,15 +165,70 @@ export function getTenantDb(tenantId: string, connectionString: string): PrismaC
 
 /**
  * Build connection string from tenant database info
+ * IMPORTANT: Password should be decrypted before calling this function
+ * 
+ * @param tenant - Tenant database info with DECRYPTED password
+ * @returns PostgreSQL connection string with URL-encoded credentials
  */
 export function buildConnectionString(tenant: {
   dbUser: string;
-  dbPassword: string;
+  dbPassword: string; // Must be decrypted!
   dbHost: string;
   dbPort: number;
   dbName: string;
 }): string {
-  return `postgresql://${tenant.dbUser}:${tenant.dbPassword}@${tenant.dbHost}:${tenant.dbPort}/${tenant.dbName}?schema=public&connection_limit=10`;
+  try {
+    // URL-encode credentials to handle special characters safely
+    const encodedUser = encodeURIComponent(tenant.dbUser);
+    const encodedPassword = encodeURIComponent(tenant.dbPassword);
+    const encodedDbName = encodeURIComponent(tenant.dbName);
+    
+    // Validate host to prevent injection
+    if (!/^[a-z0-9.-]+$/i.test(tenant.dbHost)) {
+      throw new Error(`Invalid database host format: ${tenant.dbHost}`);
+    }
+    
+    // Validate port
+    if (tenant.dbPort < 1 || tenant.dbPort > 65535) {
+      throw new Error(`Invalid database port: ${tenant.dbPort}`);
+    }
+    
+    return `postgresql://${encodedUser}:${encodedPassword}@${tenant.dbHost}:${tenant.dbPort}/${encodedDbName}?schema=public&connection_limit=10`;
+  } catch (error) {
+    console.error('[TenantConnector] Failed to build connection string:', error);
+    throw new Error(`Failed to build database connection string: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Build connection string with automatic password decryption
+ * USE THIS instead of buildConnectionString when you have encrypted password
+ * 
+ * @param tenant - Tenant database info with ENCRYPTED password
+ * @returns PostgreSQL connection string
+ */
+export async function buildConnectionStringWithDecryption(tenant: {
+  dbUser: string;
+  dbPassword: string; // Encrypted
+  dbHost: string;
+  dbPort: number;
+  dbName: string;
+}): Promise<string> {
+  try {
+    // Decrypt password
+    const decryptedPassword = await decryptDatabasePassword(tenant.dbPassword);
+    
+    // Build connection string with decrypted password
+    return buildConnectionString({
+      ...tenant,
+      dbPassword: decryptedPassword,
+    });
+  } catch (error) {
+    if (error instanceof DecryptionError) {
+      throw new Error(`Failed to decrypt database password: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 /**

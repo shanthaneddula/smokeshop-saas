@@ -3,6 +3,8 @@ import { z } from 'zod';
 import prisma from '@/lib/db/prisma';
 import { hashPassword, validatePasswordStrength } from '@/lib/auth/password';
 import { generateToken } from '@/lib/auth/jwt';
+import { applyRateLimit, addRateLimitHeaders } from '@/lib/security/rate-limit-middleware';
+import { RATE_LIMITS } from '@/lib/security/rate-limiter';
 
 const registerSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -12,13 +14,19 @@ const registerSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
+    // Apply rate limiting (3 attempts per hour per IP)
+    const rateLimitResult = await applyRateLimit(request, RATE_LIMITS.TENANT_REGISTER);
+    if (!rateLimitResult.allowed && rateLimitResult.response) {
+      return rateLimitResult.response;
+    }
+    
     const body = await request.json();
     
     // Validate input
     const result = registerSchema.safeParse(body);
     if (!result.success) {
       return NextResponse.json(
-        { error: result.error.errors[0].message },
+        { error: result.error.issues[0].message },
         { status: 400 }
       );
     }
@@ -85,7 +93,8 @@ export async function POST(request: NextRequest) {
       path: '/',
     });
     
-    return response;
+    // Add rate limit headers to successful response
+    return addRateLimitHeaders(response, rateLimitResult.info);
   } catch (error) {
     console.error('Registration error:', error);
     return NextResponse.json(

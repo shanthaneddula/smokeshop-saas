@@ -35,13 +35,8 @@ export default function LoginPage() {
         return;
       }
 
-      // Redirect based on user's organization
-      if (data.user.organizationSlug) {
-        window.location.href = '/dashboard';
-      } else {
-        // User has no organization yet - redirect to org registration
-        router.push('/register-org');
-      }
+      // Redirect to dashboard (tenant context already established)
+      window.location.href = '/dashboard';
     } catch (err) {
       setError('An error occurred. Please try again.');
       setLoading(false);

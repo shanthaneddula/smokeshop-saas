@@ -1,11 +1,13 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import ProtectedRoute from '@/components/auth/ProtectedRoute';
 import { useAuth } from '@/components/auth/AuthProvider';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export default function DashboardPage() {
+  const router = useRouter();
   const { user, logout } = useAuth();
 
   return (
@@ -84,14 +86,18 @@ export default function DashboardPage() {
                 <CardDescription>What would you like to do?</CardDescription>
               </CardHeader>
               <CardContent className="space-y-2">
-                <Button variant="outline" className="w-full justify-start">
-                  View Products
+                <Button 
+                  variant="outline" 
+                  className="w-full justify-start"
+                  onClick={() => router.push('/dashboard/products')}
+                >
+                  📦 View Products
                 </Button>
                 <Button variant="outline" className="w-full justify-start">
-                  Manage Orders
+                  📋 Manage Orders
                 </Button>
                 <Button variant="outline" className="w-full justify-start">
-                  Open POS
+                  💰 Open POS
                 </Button>
               </CardContent>
             </Card>
@@ -99,25 +105,27 @@ export default function DashboardPage() {
 
           <Card className="mt-6">
             <CardHeader>
-              <CardTitle>🎉 Authentication System Complete!</CardTitle>
-              <CardDescription>Phase 1 is done</CardDescription>
+              <CardTitle>🎉 Multi-Tenant Product Management Ready!</CardTitle>
+              <CardDescription>Tenant isolation & product catalog integration complete</CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-slate-600">
-                You've successfully logged in! The authentication system is working with:
+                Your smoke shop platform is ready with:
               </p>
               <ul className="mt-4 space-y-2 text-sm text-slate-600 list-disc list-inside">
-                <li>JWT token-based authentication</li>
-                <li>Secure httpOnly cookies</li>
-                <li>Password hashing with bcrypt</li>
-                <li>Protected routes</li>
-                <li>Session management</li>
-                <li>Login/Register pages</li>
-                <li>Auth context provider</li>
+                <li>✅ Complete database isolation per tenant</li>
+                <li>✅ Master product catalog (MongoDB)</li>
+                <li>✅ Tenant inventory management</li>
+                <li>✅ Search catalog & add products</li>
+                <li>✅ Image uploads (Vercel Blob)</li>
+                <li>✅ Connection pooling</li>
+                <li>✅ Platform admin system</li>
               </ul>
-              <p className="mt-4 text-sm font-medium text-slate-900">
-                Next up: Tenant isolation middleware and organization registration!
-              </p>
+              <div className="mt-4 flex gap-2">
+                <Button onClick={() => router.push('/dashboard/products')}>
+                  Get Started with Products
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </main>
