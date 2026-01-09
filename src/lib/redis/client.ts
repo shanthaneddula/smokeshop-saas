@@ -16,44 +16,54 @@ const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 1000;
 
 /**
- * Redis connection configuration
+ * Parse Redis connection string or use individual config
  */
-const redisConfig: RedisOptions = {
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  password: process.env.REDIS_PASSWORD,
-  db: parseInt(process.env.REDIS_DB || '0', 10),
+function getRedisConfig(): RedisOptions | string {
+  // If REDIS_URL is provided, use it (connection string format)
+  if (process.env.REDIS_URL) {
+    console.log('🔧 Redis: Using connection string from REDIS_URL');
+    return process.env.REDIS_URL;
+  }
   
-  // Connection settings
-  maxRetriesPerRequest: 3,
-  enableReadyCheck: true,
-  enableOfflineQueue: false, // Fail fast if not connected
-  
-  // Timeouts
-  connectTimeout: 5000,
-  commandTimeout: 2000,
-  
-  // Retry strategy
-  retryStrategy(times: number) {
-    if (times > MAX_RETRY_ATTEMPTS) {
-      console.error('❌ Redis: Max retry attempts reached, giving up');
-      return null; // Stop retrying
-    }
+  // Otherwise use individual config variables
+  console.log('🔧 Redis: Using individual config variables');
+  return {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    password: process.env.REDIS_PASSWORD,
+    db: parseInt(process.env.REDIS_DB || '0', 10),
     
-    const delay = Math.min(times * RETRY_DELAY_MS, 5000);
-    console.log(`⚠️ Redis: Retry attempt ${times} in ${delay}ms`);
-    return delay;
-  },
-  
-  // Reconnect on error
-  reconnectOnError(err) {
-    const targetError = 'READONLY';
-    if (err.message.includes(targetError)) {
-      return true; // Reconnect
-    }
-    return false;
-  },
-};
+    // Connection settings
+    maxRetriesPerRequest: 3,
+    enableReadyCheck: true,
+    enableOfflineQueue: false, // Fail fast if not connected
+    
+    // Timeouts
+    connectTimeout: 5000,
+    commandTimeout: 2000,
+    
+    // Retry strategy
+    retryStrategy(times: number) {
+      if (times > MAX_RETRY_ATTEMPTS) {
+        console.error('❌ Redis: Max retry attempts reached, giving up');
+        return null; // Stop retrying
+      }
+      
+      const delay = Math.min(times * RETRY_DELAY_MS, 5000);
+      console.log(`⚠️ Redis: Retry attempt ${times} in ${delay}ms`);
+      return delay;
+    },
+    
+    // Reconnect on error
+    reconnectOnError(err) {
+      const targetError = 'READONLY';
+      if (err.message.includes(targetError)) {
+        return true; // Reconnect
+      }
+      return false;
+    },
+  };
+}
 
 /**
  * Get Redis client instance (singleton)
@@ -80,8 +90,11 @@ export function getRedisClient(): Redis | null {
   try {
     connectionAttempts++;
     
+    // Get Redis configuration (connection string or config object)
+    const config = getRedisConfig();
+    
     // Create new client
-    redisClient = new Redis(redisConfig);
+    redisClient = new Redis(config);
     
     // Event handlers
     redisClient.on('connect', () => {
